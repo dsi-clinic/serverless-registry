@@ -3,6 +3,8 @@
 A private Docker/OCI container registry running on Cloudflare Workers with R2 storage, forked from [cloudflare/serverless-registry](https://github.com/cloudflare/serverless-registry).
 
 **Registry URL:** `registry.uchicago-dsi.org`
+**Domain:** Managed under `uchicago-dsi.org` in Cloudflare (DNS and SSL handled automatically)
+**Credentials:** Username and password are stored in Bitwarden.
 
 ## Using the Registry
 
@@ -12,7 +14,7 @@ A private Docker/OCI container registry running on Cloudflare Workers with R2 st
 docker login registry.uchicago-dsi.org -u core-facility-registry
 ```
 
-You'll be prompted for the password. Contact the DSI team if you need credentials.
+You'll be prompted for the password. Look up the credentials in Bitwarden.
 
 ### Pushing Images
 
