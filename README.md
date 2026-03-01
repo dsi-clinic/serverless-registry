@@ -1,136 +1,117 @@
-# Container Registry in Workers
+# UChicago DSI Container Registry
 
-This repository contains a container registry implementation in Workers that uses R2.
+A private Docker/OCI container registry running on Cloudflare Workers with R2 storage, forked from [cloudflare/serverless-registry](https://github.com/cloudflare/serverless-registry).
 
-It supports all pushing and pulling workflows. It also supports
-Username/Password and public key JWT based authentication.
+**Registry URL:** `registry.uchicago-dsi.org`
 
-### Deployment
+## Using the Registry
 
-You have to install all the dependencies with [pnpm](https://pnpm.io/installation) (other package managers may work, but only pnpm is supported.)
-
-```bash
-$ pnpm install
-```
-
-After installation, there is a few steps to actually deploy the registry into production:
-
-1. Have your own `wrangler` file.
+### Login
 
 ```bash
-$ cp wrangler.toml.example wrangler.toml
+docker login registry.uchicago-dsi.org -u core-facility-registry
 ```
 
-2. Setup the R2 Bucket for this registry
+You'll be prompted for the password. Contact the DSI team if you need credentials.
+
+### Pushing Images
 
 ```bash
-$ npx wrangler --env production r2 bucket create r2-registry
+# Tag your image for the registry
+docker tag myapp:latest registry.uchicago-dsi.org/myapp:latest
+
+# Push
+docker push registry.uchicago-dsi.org/myapp:latest
 ```
 
-Add this to your `wrangler.toml`
-
-```
-r2_buckets = [
-    { binding = "REGISTRY", bucket_name = "r2-registry"}
-]
-```
-
-3. Deploy your image registry
+### Pulling Images
 
 ```bash
-$ npx wrangler deploy --env production
+docker pull registry.uchicago-dsi.org/myapp:latest
 ```
 
-Your registry should be up and running. It will refuse any requests if you don't setup credentials.
-
-### Adding username password based authentication
-
-Set the USERNAME and PASSWORD as secrets with `npx wrangler secret put USERNAME --env production` and `npx wrangler secret put PASSWORD --env production`.
-
-### Adding JWT authentication with public key
-
-You can add a base64 encoded JWT public key to verify passwords (or token) that are signed by the private key.
-`npx wrangler secret put JWT_REGISTRY_TOKENS_PUBLIC_KEY --env production`
-
-### Using with Docker
-
-You can use this registry with Docker to push and pull images.
-
-Example using `docker push` and `docker pull`:
+### Listing Repositories
 
 ```bash
-export REGISTRY_URL=your-url-here
-
-# Replace $PASSWORD and $USERNAME with the actual credentials
-echo $PASSWORD | docker login --username $USERNAME --password-stdin $REGISTRY_URL
-docker pull ubuntu:latest
-docker tag ubuntu:latest $REGISTRY_URL/ubuntu:latest
-docker push $REGISTRY_URL/ubuntu:latest
-
-# Check that pulls work
-docker rmi ubuntu:latest $REGISTRY_URL/ubuntu:latest
-docker pull $REGISTRY_URL/ubuntu:latest
+curl -u core-facility-registry:$PASSWORD https://registry.uchicago-dsi.org/v2/_catalog
 ```
 
-### Configuring Pull fallback
+## Infrastructure
 
-You can configure the R2 registry to fallback to another registry if
-it doesn't exist in your R2 bucket. It will download from the registry
-and copy it into the R2 bucket. In the next pull it will be able to pull it directly from R2.
+- **Worker:** `uchicago-dsi-registry-production`
+- **R2 Bucket:** `r2-registry`
+- **Domain:** `registry.uchicago-dsi.org` (custom domain on Cloudflare)
+- **Auth:** Username/password (stored as Wrangler secrets)
 
-This is very useful for migrating from one registry to `serverless-registry`.
+## Administration
 
-It supports both Basic and Bearer authentications as explained in the
-[registry spec](https://distribution.github.io/distribution/spec/auth/token/).
+### Rotating Credentials
 
-In the wrangler.toml file:
-
+```bash
+npx wrangler secret put USERNAME --env production
+npx wrangler secret put PASSWORD --env production
 ```
+
+### Deploying Updates
+
+```bash
+pnpm install
+npx wrangler deploy --env production
+```
+
+### Adding Read-Only Credentials
+
+For users/services that should only be able to pull (not push):
+
+```bash
+npx wrangler secret put READONLY_USERNAME --env production
+npx wrangler secret put READONLY_PASSWORD --env production
+```
+
+### Garbage Collection
+
+Remove unreferenced layers for a specific image:
+
+```bash
+curl -X POST -u core-facility-registry:$PASSWORD \
+  https://registry.uchicago-dsi.org/myapp/gc
+```
+
+### Configuring Pull Fallback
+
+To mirror images from another registry (e.g., Docker Hub), add to `wrangler.toml`:
+
+```toml
 [env.production.vars]
-REGISTRIES_JSON = "[{ \"registry\": \"https://url-to-other-registry\", \"password_env\": \"REGISTRY_TOKEN\", \"username\": \"username-to-use\" }]"
-```
-
-Set as a secret the registry token of the registry you want to setup
-pull fallback in.
-
-For example [gcr](https://cloud.google.com/artifact-registry/docs/reference/docker-api):
-
-```
-cat ./registry-service-credentials.json | base64 | npx wrangler secret put REGISTRY_TOKEN --env production
-```
-
-[Github](https://github.com/settings/tokens) for example uses a simple token that you can copy.
-
-```
-echo $GITHUB_TOKEN | npx wrangler secret put REGISTRY_TOKEN --env production
-```
-
-The trick is always looking for how you would login in Docker for
-the target registry and setup the credentials.
-
-**Never put a registry password/token inside the wrangler.toml, please always use `wrangler secrets put`**
-
-You can also use docker.io with anonymous authentication:
-```
 REGISTRIES_JSON = "[{ \"registry\": \"https://index.docker.io/\" }]"
 ```
 
-You can also set your `docker.io` credentials in the configuration to not have any rate-limiting.
+For authenticated fallback registries, set the token as a secret:
 
+```bash
+echo $TOKEN | npx wrangler secret put REGISTRY_TOKEN --env production
+```
 
-### Known limitations
+Then reference it in the config:
 
-Right now there is some limitations with this container registry.
+```toml
+REGISTRIES_JSON = "[{ \"registry\": \"https://index.docker.io/\", \"password_env\": \"REGISTRY_TOKEN\", \"username\": \"your-docker-username\" }]"
+```
 
-- Pushing with docker is limited to images that have layers of maximum size 500MB. Refer to maximum request body sizes in your Workers plan.
-- To circumvent that limitation, you can either manually interact with the R2 bucket to upload the layer or take a
-  peek at the `./push` folder for some inspiration on how can you push big layers.
-- If you use `npx wrangler dev` and push to the R2 registry with docker, the R2 registry will have to buffer the request on the Worker.
+## Known Limitations
+
+- Pushing with Docker is limited to layers of maximum 500MB (Cloudflare Workers request body size limit).
+- To work around this, see the `./push` folder for a tool that handles large layers.
+- Local dev with `npx wrangler dev` buffers requests in the Worker, which may be slower.
+
+## Development
+
+```bash
+pnpm install
+npx wrangler dev --env dev
+# Dev credentials: username=hello, password=world
+```
 
 ## License
 
-The project is licensed under the [Apache License](https://opensource.org/licenses/apache-2.0/).
-
-### Contribution
-
-See `CONTRIBUTING.md` for contributing to the project.
+Licensed under the [Apache License](https://opensource.org/licenses/apache-2.0/). See `CONTRIBUTING.md` for contribution guidelines.
